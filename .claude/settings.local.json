@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pip --version)",
+      "Bash(pip3 --version)",
+      "Bash(python -c \"import sys; print\\(sys.executable\\); print\\(sys.version\\)\")",
+      "Bash(python -m venv .venv)",
+      "Bash(.venv/Scripts/python -m pip install --upgrade pip --quiet)",
+      "Bash(.venv/Scripts/pip install *)",
+      "Bash(.venv/Scripts/pip list *)"
+    ]
+  }
+}
