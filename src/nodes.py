@@ -4,12 +4,11 @@ from __future__ import annotations
 
 import ipaddress
 import json
-import os
 from dataclasses import dataclass
 from typing import Any, Dict, List
 
+from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_openai import ChatOpenAI
 
 from .prompts import (
     MACRO_TRIAGE_SYSTEM,
@@ -28,14 +27,15 @@ from .security import (
     validate_ip,
     validate_port,
 )
+from .mcp_client import WiresharkMCPClient
 from .state import TrafficAnalysisState
-from .tshark_tools import TsharkConfig, export_packets_hex, export_packets_json, get_ip_conversations, get_protocol_hierarchy
 
 
 @dataclass(frozen=True)
 class NodeConfig:
-    model: ChatOpenAI
-    tshark: TsharkConfig
+    model: BaseChatModel
+    mcp: WiresharkMCPClient
+    max_packets: int = 100
     max_iterations: int = 5
 
 
@@ -44,6 +44,15 @@ def _safe_json_loads(payload: str, fallback: Dict[str, Any]) -> Dict[str, Any]:
         return json.loads(payload)
     except json.JSONDecodeError:
         return fallback
+
+
+def _payload_to_json(payload: Any) -> str:
+    if isinstance(payload, dict) and "data" in payload:
+        payload = payload.get("data")
+    try:
+        return json.dumps(payload, ensure_ascii=False, indent=2)
+    except TypeError:
+        return str(payload)
 
 
 def _normalize_suspicious_targets(raw_targets: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -85,8 +94,14 @@ def _fallback_filters(suspicious_targets: List[Dict[str, Any]]) -> List[str]:
 def macro_triage_node(config: NodeConfig):
     def _node(state: TrafficAnalysisState) -> Dict[str, Any]:
         pcap_path = ensure_pcap_path(state["pcap_path"])
-        protocol_hierarchy = get_protocol_hierarchy(pcap_path, config.tshark)
-        ip_conversations = get_ip_conversations(pcap_path, config.tshark)
+        protocol_stats = config.mcp.get_protocol_statistics(pcap_path)
+        if protocol_stats.get("status") != "success":
+            error_message = protocol_stats.get("message", "unknown error")
+            protocol_hierarchy = f"error: {error_message}"
+            ip_conversations = f"error: {error_message}"
+        else:
+            protocol_hierarchy = protocol_stats.get("protocol_hierarchy", "")
+            ip_conversations = protocol_stats.get("ip_conversations", "")
         prompt = MACRO_TRIAGE_USER.format(
             protocol_hierarchy=protocol_hierarchy,
             ip_conversations=ip_conversations,
@@ -157,10 +172,11 @@ def micro_deepdive_node(config: NodeConfig):
             iterations = 0
             while iterations < config.max_iterations:
                 iterations += 1
-                packets_json = export_packets_json(
-                    pcap_path, safe_filter, config.tshark
+                packets_payload = config.mcp.export_packets_json(
+                    pcap_path, safe_filter, config.max_packets
                 )
-                packets_hex = export_packets_hex(pcap_path, safe_filter, config.tshark)
+                packets_json = _payload_to_json(packets_payload)
+                packets_hex = ""
                 prompt = MICRO_DEEPDIVE_USER.format(
                     display_filter=safe_filter,
                     packets_json=packets_json,
@@ -200,64 +216,18 @@ def _is_global_ip(ip_value: str) -> bool:
         return False
 
 
-def _check_abuseipdb(ip_value: str, api_key: str) -> Dict[str, Any]:
-    import urllib.parse
-    import urllib.request
-
-    base_url = "https://api.abuseipdb.com/api/v2/check"
-    query = urllib.parse.urlencode({"ipAddress": ip_value, "maxAgeInDays": "90"})
-    request = urllib.request.Request(
-        f"{base_url}?{query}",
-        headers={"Key": api_key, "Accept": "application/json"},
-    )
-    with urllib.request.urlopen(request, timeout=10) as response:
-        payload = response.read().decode("utf-8")
-    return json.loads(payload)
-
-
-def _check_urlhaus(ip_value: str) -> Dict[str, Any]:
-    import urllib.parse
-    import urllib.request
-
-    url = "https://urlhaus-api.abuse.ch/v1/host/"
-    data = urllib.parse.urlencode({"host": ip_value}).encode("utf-8")
-    request = urllib.request.Request(url, data=data, headers={"Accept": "application/json"})
-    with urllib.request.urlopen(request, timeout=10) as response:
-        payload = response.read().decode("utf-8")
-    return json.loads(payload)
-
-
 def threat_intel_node(config: NodeConfig):
     def _node(state: TrafficAnalysisState) -> Dict[str, Any]:
-        results: List[Dict[str, Any]] = []
-        api_key = os.getenv("ABUSEIPDB_API_KEY", "").strip()
-        for target in state["suspicious_targets"]:
-            ip_value = target.get("ip")
-            if not ip_value:
-                continue
-            if not _is_global_ip(ip_value):
-                results.append(
-                    {
-                        "ip": ip_value,
-                        "status": "skipped",
-                        "reason": "non-global ip",
-                    }
-                )
-                continue
-            entry: Dict[str, Any] = {"ip": ip_value}
-            if api_key:
-                try:
-                    entry["abuseipdb"] = _check_abuseipdb(ip_value, api_key)
-                except Exception as exc:
-                    entry["abuseipdb_error"] = str(exc)
-            else:
-                entry["abuseipdb_error"] = "ABUSEIPDB_API_KEY not set"
-            try:
-                entry["urlhaus"] = _check_urlhaus(ip_value)
-            except Exception as exc:
-                entry["urlhaus_error"] = str(exc)
-            results.append(entry)
-        return {"threat_intel": results}
+        targets = [t.get("ip") for t in state["suspicious_targets"]]
+        ips = [ip for ip in targets if ip and _is_global_ip(ip)]
+        if not ips:
+            return {"threat_intel": []}
+
+        providers = "urlhaus,abuseipdb"
+        result = config.mcp.check_ip_threat_intel(ips, providers)
+        if result.get("status") == "success" and isinstance(result.get("results"), list):
+            return {"threat_intel": result.get("results", [])}
+        return {"threat_intel": [result]}
 
     return _node
 

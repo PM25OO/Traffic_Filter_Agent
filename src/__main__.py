@@ -5,6 +5,8 @@ import os
 import sys
 
 from .graph import build_graph
+from .mcp_client import WiresharkMCPClient
+from .model_provider import create_chat_model
 from .security import ensure_pcap_path
 from .state import TrafficAnalysisState
 
@@ -27,8 +29,31 @@ def main() -> int:
     _load_dotenv()
     parser = argparse.ArgumentParser(description="Traffic Filter Agent")
     parser.add_argument("--pcap", type=str, required=True, help="Path to a PCAP file to analyze")
-    parser.add_argument("--model", type=str, default=os.getenv("OPENAI_MODEL", "gpt-4o"),
-                        help="LLM model name")
+    parser.add_argument(
+        "--provider",
+        type=str,
+        default=os.getenv("MODEL_PROVIDER", "deepseek"),
+        choices=["deepseek", "openai"],
+        help="LLM provider (deepseek or openai)",
+    )
+    default_model = os.getenv("MODEL_NAME")
+    if not default_model:
+        if os.getenv("MODEL_PROVIDER", "deepseek") == "deepseek":
+            default_model = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-pro")
+        else:
+            default_model = os.getenv("OPENAI_MODEL", "gpt-4o")
+    parser.add_argument(
+        "--model",
+        type=str,
+        default=default_model,
+        help="LLM model name",
+    )
+    parser.add_argument(
+        "--base-url",
+        type=str,
+        default=None,
+        help="Override API base URL for the provider",
+    )
     parser.add_argument("--temperature", type=float, default=0,
                         help="LLM temperature for deterministic outputs")
     parser.add_argument("--max-packets", type=int, default=100,
@@ -37,16 +62,22 @@ def main() -> int:
                         help="Max iterations for micro deepdive loop")
     args = parser.parse_args()
 
-    if not os.getenv("OPENAI_API_KEY"):
-        raise RuntimeError("OPENAI_API_KEY is required. Set it in the environment or .env.")
+    provider = args.provider.lower()
+    model = create_chat_model(
+        provider=provider,
+        model_name=args.model,
+        temperature=args.temperature,
+        base_url=args.base_url,
+    )
 
     pcap_path = ensure_pcap_path(args.pcap)
     max_packets = min(args.max_packets, 100)
 
-    print(f"Traffic Filter Agent starting with model={args.model}")
+    print(f"Traffic Filter Agent starting with provider={provider} model={args.model}")
+    mcp_client = WiresharkMCPClient.from_env()
     graph = build_graph(
-        model_name=args.model,
-        temperature=args.temperature,
+        model=model,
+        mcp_client=mcp_client,
         max_packets=max_packets,
         max_iterations=args.max_iterations,
     )

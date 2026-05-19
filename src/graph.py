@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from langchain_openai import ChatOpenAI
+from langchain_core.language_models.chat_models import BaseChatModel
 from langgraph.graph import END, START, StateGraph
 
+from .mcp_client import WiresharkMCPClient
 from .nodes import (
     NodeConfig,
     macro_triage_node,
@@ -14,23 +15,21 @@ from .nodes import (
     threat_intel_node,
 )
 from .state import TrafficAnalysisState
-from .tshark_tools import TsharkConfig
 
 DEFAULT_MAX_PACKETS = 100
 DEFAULT_MAX_ITERATIONS = 5
 
 
 def build_graph(
-    model_name: str,
-    temperature: float,
+    model: BaseChatModel,
+    mcp_client: WiresharkMCPClient,
     max_packets: int = DEFAULT_MAX_PACKETS,
     max_iterations: int = DEFAULT_MAX_ITERATIONS,
 ):
-    model = ChatOpenAI(model=model_name, temperature=temperature)
-    tshark_config = TsharkConfig(max_packets=min(max_packets, DEFAULT_MAX_PACKETS))
     node_config = NodeConfig(
         model=model,
-        tshark=tshark_config,
+        mcp=mcp_client,
+        max_packets=min(max_packets, DEFAULT_MAX_PACKETS),
         max_iterations=max_iterations,
     )
 

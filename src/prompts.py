@@ -36,7 +36,7 @@ MICRO_DEEPDIVE_SYSTEM = (
     "你是网络流量深挖分析专家。根据给定过滤器和包内容，识别 VPN/代理、恶意软件 C2 心跳、"
     "以及内网异常行为，并给出证据。"
     "重点：TLS 握手特征(如 SNI/JA3 线索)、周期性小包、DGA 域名、"
-    "横向移动端口扫描等。"
+    "横向移动端口扫描等。若 HEX 为空，请基于 JSON 证据判断。"
 )
 
 MICRO_DEEPDIVE_USER = (
@@ -52,7 +52,7 @@ MICRO_DEEPDIVE_USER = (
     "只输出 JSON，不要额外说明。\n\n"
     "Filter: {display_filter}\n\n"
     "[Packets JSON]\n{packets_json}\n\n"
-    "[Packets HEX]\n{packets_hex}\n"
+    "[Packets HEX] (may be empty)\n{packets_hex}\n"
 )
 
 REPORT_SYSTEM = (
