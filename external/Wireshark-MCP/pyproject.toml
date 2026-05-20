@@ -1,0 +1,83 @@
+[project]
+name = "wireshark-mcp-server"
+version = "0.1.0"
+description = "Comprehensive Wireshark + Nmap MCP server for network analysis with threat intelligence"
+authors = [{name = "Wireshark MCP Contributors"}]
+readme = "README.md"
+requires-python = ">=3.8"
+license = {text = "MIT"}
+keywords = ["mcp", "wireshark", "nmap", "network-analysis", "packet-capture", "threat-intelligence"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: System Administrators",
+    "Topic :: System :: Networking :: Monitoring",
+    "Topic :: Security",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+
+dependencies = [
+    "fastmcp>=0.9.0",
+    "typing-extensions>=4.0.0",
+    "python-nmap>=0.7.1",
+    "dnspython>=2.4.0",
+    "requests>=2.31.0",
+    "requests-cache>=1.1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-mock>=3.12.0",
+    "pytest-cov>=4.1.0",
+    "black>=22.0.0",
+    "ruff>=0.1.0",
+    "mypy>=1.0.0",
+]
+
+[project.scripts]
+wireshark-mcp-server = "wireshark_mcp.server:main"
+
+[project.urls]
+Homepage = "https://github.com/yourusername/wireshark-mcp"
+Documentation = "https://github.com/yourusername/wireshark-mcp#readme"
+Repository = "https://github.com/yourusername/wireshark-mcp"
+Issues = "https://github.com/yourusername/wireshark-mcp/issues"
+
+[build-system]
+requires = ["setuptools>=68.0.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["wireshark_mcp", "wireshark_mcp.core", "wireshark_mcp.interfaces",
+            "wireshark_mcp.tools", "wireshark_mcp.resources", "wireshark_mcp.prompts",
+            "wireshark_mcp.utils"]
+
+[tool.black]
+line-length = 100
+target-version = ['py38']
+
+[tool.ruff]
+line-length = 100
+target-version = "py38"
+
+[tool.mypy]
+python_version = "3.8"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --cov=wireshark_mcp --cov-report=html --cov-report=term"

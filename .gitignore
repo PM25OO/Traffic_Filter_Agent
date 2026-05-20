@@ -16,8 +16,6 @@ build/
 .env
 .env.local
 
-# External dependencies
-external/
 
 # OS
 Thumbs.db

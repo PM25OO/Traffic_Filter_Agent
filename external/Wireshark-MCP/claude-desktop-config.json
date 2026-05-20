@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "wireshark": {
+      "command": "python",
+      "args": ["wireshark-mcp-server.py"],
+      "env": {
+        "PYTHONPATH": ".",
+        "MCP_LOG_LEVEL": "INFO"
+      }
+    }
+  }
+}
