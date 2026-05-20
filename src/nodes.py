@@ -176,11 +176,9 @@ def micro_deepdive_node(config: NodeConfig):
                     pcap_path, safe_filter, config.max_packets
                 )
                 packets_json = _payload_to_json(packets_payload)
-                packets_hex = ""
                 prompt = MICRO_DEEPDIVE_USER.format(
                     display_filter=safe_filter,
                     packets_json=packets_json,
-                    packets_hex=packets_hex,
                 )
                 response = config.model.invoke(
                     [
