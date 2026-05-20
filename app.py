@@ -10,6 +10,17 @@ Usage:
 
 from __future__ import annotations
 
+# Load .env BEFORE any src.* imports — src/graph.py reads env vars at module level.
+from pathlib import Path as _Path
+from dotenv import load_dotenv as _load_dotenv
+
+_env_path = _Path(__file__).resolve().parent / ".env"
+if _env_path.exists():
+    _load_dotenv(_env_path)
+else:
+    # Fallback: search from CWD upward
+    _load_dotenv()
+
 import asyncio
 import tempfile
 import uuid

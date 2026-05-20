@@ -6,3 +6,4 @@ langgraph-prebuilt>=1.1.0
 openai>=2.37.0,<3.0.0
 mcp>=1.24.0,<2.0.0
 streamlit>=1.50.0,<2.0.0
+python-dotenv>=1.0.0,<2.0.0

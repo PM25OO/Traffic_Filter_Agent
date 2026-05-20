@@ -3,6 +3,19 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path as _Path
+
+# Load .env when imported outside of langgraph dev / streamlit run (which load it first).
+# Uses setdefault semantics — explicit env vars take priority over .env values.
+try:
+    from dotenv import load_dotenv as _load_dotenv
+
+    _env_file = _Path(__file__).resolve().parents[1] / ".env"
+    if _env_file.exists():
+        _load_dotenv(_env_file, override=False)
+except ImportError:
+    pass
+
 from langchain_core.language_models.chat_models import BaseChatModel
 from langgraph.graph import END, START, StateGraph
 
