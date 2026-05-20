@@ -1,0 +1,8 @@
+{
+  "dependencies": ["."],
+  "graphs": {
+    "traffic_filter": "src.graph:graph",
+    "agent": "src.agent:agent_graph"
+  },
+  "env": ".env"
+}

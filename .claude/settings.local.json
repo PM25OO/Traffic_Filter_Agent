@@ -7,7 +7,15 @@
       "Bash(python -m venv .venv)",
       "Bash(.venv/Scripts/python -m pip install --upgrade pip --quiet)",
       "Bash(.venv/Scripts/pip install *)",
-      "Bash(.venv/Scripts/pip list *)"
+      "Bash(.venv/Scripts/pip list *)",
+      "PowerShell(.venv/Scripts/python -c \"import sys; sys.path.insert\\(0, '.'\\); from src.graph import graph; print\\(type\\(graph\\).__name__\\); print\\('OK'\\)\")",
+      "PowerShell(.venv/Scripts/pip install mcp --quiet)",
+      "PowerShell(.venv/Scripts/langgraph --help 2>$null)",
+      "PowerShell(.venv/Scripts/python -m langgraph --help 2>&1)",
+      "PowerShell(.venv/Scripts/pip show langgraph-cli 2>$null)",
+      "PowerShell(.venv/Scripts/langgraph.exe --help 2>&1)",
+      "PowerShell($env:PYTHONIOENCODING='utf-8'; .venv/Scripts/langgraph.exe dev --help 2>&1)",
+      "PowerShell(.venv/Scripts/python -c \"from src.graph import graph; print\\(type\\(graph\\).__name__\\)\")"
     ]
   }
 }

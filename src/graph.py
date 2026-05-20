@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import os
 from langchain_core.language_models.chat_models import BaseChatModel
 from langgraph.graph import END, START, StateGraph
 
 from .mcp_client import WiresharkMCPClient
+from .model_provider import create_chat_model
 from .nodes import (
     NodeConfig,
     macro_triage_node,
@@ -18,6 +20,7 @@ from .state import TrafficAnalysisState
 
 DEFAULT_MAX_PACKETS = 100
 DEFAULT_MAX_ITERATIONS = 5
+
 
 
 def build_graph(
@@ -48,3 +51,28 @@ def build_graph(
     graph.add_edge("report_synthesis", END)
 
     return graph.compile()
+
+
+def _get_graph():
+    """Build and return the compiled graph from environment variables."""
+    provider = os.getenv("MODEL_PROVIDER", "deepseek").lower()
+    model_name = os.getenv("MODEL_NAME")
+    if not model_name:
+        if provider == "deepseek":
+            model_name = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-pro")
+        else:
+            model_name = os.getenv("OPENAI_MODEL", "gpt-4o")
+
+    model = create_chat_model(
+        provider=provider,
+        model_name=model_name,
+        temperature=0,
+        base_url=None,
+    )
+    mcp_client = WiresharkMCPClient.from_env()
+    return build_graph(model=model, mcp_client=mcp_client)
+
+
+# Module-level compiled graph for "langgraph dev" server.
+# Reads configuration from environment variables / .env file.
+graph = _get_graph()
