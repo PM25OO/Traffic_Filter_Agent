@@ -7,6 +7,7 @@ import os
 import re
 from typing import Iterable
 
+import anyio
 
 _DISPLAY_FILTER_ALLOWED = re.compile(
     r"^[A-Za-z0-9\s\._:\-\(\)\[\]\=\!\<\>\&\|\+\*\/,\'\"]+$"
@@ -19,6 +20,19 @@ def ensure_pcap_path(pcap_path: str) -> str:
         raise ValueError("pcap_path is required")
     abs_path = os.path.abspath(pcap_path)
     if not os.path.isfile(abs_path):
+        raise FileNotFoundError(f"pcap file not found: {abs_path}")
+    if not abs_path.lower().endswith((".pcap", ".pcapng")):
+        raise ValueError("pcap_path must end with .pcap or .pcapng")
+    return abs_path
+
+
+async def ensure_pcap_path_async(pcap_path: str) -> str:
+    """Async variant — offloads blocking filesystem calls to a worker thread."""
+    if not pcap_path:
+        raise ValueError("pcap_path is required")
+    abs_path = await anyio.to_thread.run_sync(os.path.abspath, pcap_path)
+    is_file = await anyio.to_thread.run_sync(os.path.isfile, abs_path)
+    if not is_file:
         raise FileNotFoundError(f"pcap file not found: {abs_path}")
     if not abs_path.lower().endswith((".pcap", ".pcapng")):
         raise ValueError("pcap_path must end with .pcap or .pcapng")
