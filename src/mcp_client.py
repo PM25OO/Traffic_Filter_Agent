@@ -22,7 +22,7 @@ class MCPServerSettings:
 
 
 def _project_root() -> Path:
-    return Path(__file__).resolve().parents[1]
+    return Path(__file__).parents[1]
 
 
 def _default_settings() -> MCPServerSettings:
@@ -63,11 +63,16 @@ class WiresharkMCPClient:
     """Thin wrapper around MCP stdio client for Wireshark-MCP tools."""
 
     def __init__(self, settings: MCPServerSettings | None = None) -> None:
-        self._settings = settings or _default_settings()
+        self._settings = settings
 
     @classmethod
     def from_env(cls) -> "WiresharkMCPClient":
-        return cls(_default_settings())
+        return cls()
+
+    def _get_settings(self) -> MCPServerSettings:
+        if self._settings is None:
+            self._settings = _default_settings()
+        return self._settings
 
     def get_protocol_statistics(self, filepath: str) -> Dict[str, Any]:
         return self._call_tool_sync(
@@ -96,17 +101,44 @@ class WiresharkMCPClient:
             {"ip_or_filepath": ip_or_filepath, "providers": providers},
         )
 
-    def _call_tool_sync(self, name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
-        return anyio.run(self._call_tool_async, name, arguments)
+    def get_capture_file_info(self, filepath: str) -> Dict[str, Any]:
+        return self._call_tool_sync(
+            "get_capture_file_info",
+            {"filepath": filepath},
+        )
 
-    async def _call_tool_async(
+    def scan_capture_for_threats(self, filepath: str) -> Dict[str, Any]:
+        return self._call_tool_sync(
+            "scan_capture_for_threats",
+            {"filepath": filepath},
+        )
+
+    def list_tcp_streams(self, filepath: str) -> Dict[str, Any]:
+        return self._call_tool_sync(
+            "list_tcp_streams",
+            {"filepath": filepath},
+        )
+
+    def follow_tcp_stream(
+        self, filepath: str, stream_index: int
+    ) -> Dict[str, Any]:
+        return self._call_tool_sync(
+            "follow_tcp_stream",
+            {"filepath": filepath, "stream_index": stream_index},
+        )
+
+    def _call_tool_sync(self, name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        return anyio.run(self.call_tool, name, arguments)
+
+    async def call_tool(
         self, name: str, arguments: Dict[str, Any]
     ) -> Dict[str, Any]:
+        settings = self._get_settings()
         server_params = StdioServerParameters(
-            command=self._settings.command,
-            args=self._settings.args,
-            env=self._settings.env,
-            cwd=self._settings.cwd,
+            command=settings.command,
+            args=settings.args,
+            env=settings.env,
+            cwd=settings.cwd,
         )
 
         async with stdio_client(server_params) as (read_stream, write_stream):
