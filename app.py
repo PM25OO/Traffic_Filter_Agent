@@ -116,7 +116,9 @@ def _get_or_create_agent():
         from src.agent import _get_agent_graph
 
         with st.spinner("正在初始化 Wireshark-MCP 服务和 AI 模型…"):
-            st.session_state.agent = _get_agent_graph()
+            # _get_agent_graph is async; Streamlit's script thread has no
+            # running event loop so asyncio.run() creates one safely.
+            st.session_state.agent = asyncio.run(_get_agent_graph())
     return st.session_state.agent
 
 
