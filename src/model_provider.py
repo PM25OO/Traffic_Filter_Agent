@@ -27,6 +27,8 @@ def create_chat_model(
             temperature=temperature,
             api_key=api_key,
             base_url=resolved_base,
+            # Disable thinking mode to avoid reasoning_content round-trip errors.
+            extra_body={"thinking": {"type": "disabled"}},
         )
 
     if provider == "openai":

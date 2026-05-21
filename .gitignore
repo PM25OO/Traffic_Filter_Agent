@@ -20,3 +20,6 @@ build/
 # OS
 Thumbs.db
 .DS_Store
+
+# Test files
+testFiles/

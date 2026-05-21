@@ -2,25 +2,10 @@
 
 from __future__ import annotations
 
-import os
-from pathlib import Path as _Path
-
-# Load .env when imported outside of langgraph dev / streamlit run (which load it first).
-# Uses setdefault semantics — explicit env vars take priority over .env values.
-try:
-    from dotenv import load_dotenv as _load_dotenv
-
-    _env_file = _Path(__file__).resolve().parents[1] / ".env"
-    if _env_file.exists():
-        _load_dotenv(_env_file, override=False)
-except ImportError:
-    pass
-
 from langchain_core.language_models.chat_models import BaseChatModel
 from langgraph.graph import END, START, StateGraph
+from mcp import ClientSession
 
-from .mcp_client import WiresharkMCPClient
-from .model_provider import create_chat_model
 from .nodes import (
     NodeConfig,
     macro_triage_node,
@@ -35,16 +20,26 @@ DEFAULT_MAX_PACKETS = 100
 DEFAULT_MAX_ITERATIONS = 5
 
 
-
-def build_graph(
+async def build_graph(
     model: BaseChatModel,
-    mcp_client: WiresharkMCPClient,
+    session: ClientSession,
     max_packets: int = DEFAULT_MAX_PACKETS,
     max_iterations: int = DEFAULT_MAX_ITERATIONS,
 ):
+    """Build and compile the traffic analysis graph.
+
+    Args:
+        model: Chat model instance.
+        session: An initialized MCP ClientSession connected to Wireshark-MCP.
+        max_packets: Hard cap on packets per filter (clamped to 100).
+        max_iterations: Max ReAct iterations for micro deepdive.
+
+    Returns:
+        A compiled LangGraph graph ready for ainvoke/astream.
+    """
     node_config = NodeConfig(
         model=model,
-        mcp=mcp_client,
+        session=session,
         max_packets=min(max_packets, DEFAULT_MAX_PACKETS),
         max_iterations=max_iterations,
     )
@@ -64,28 +59,3 @@ def build_graph(
     graph.add_edge("report_synthesis", END)
 
     return graph.compile()
-
-
-def _get_graph():
-    """Build and return the compiled graph from environment variables."""
-    provider = os.getenv("MODEL_PROVIDER", "deepseek").lower()
-    model_name = os.getenv("MODEL_NAME")
-    if not model_name:
-        if provider == "deepseek":
-            model_name = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-pro")
-        else:
-            model_name = os.getenv("OPENAI_MODEL", "gpt-4o")
-
-    model = create_chat_model(
-        provider=provider,
-        model_name=model_name,
-        temperature=0,
-        base_url=None,
-    )
-    mcp_client = WiresharkMCPClient.from_env()
-    return build_graph(model=model, mcp_client=mcp_client)
-
-
-# Module-level compiled graph for "langgraph dev" server.
-# Reads configuration from environment variables / .env file.
-graph = _get_graph()

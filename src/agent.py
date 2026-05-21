@@ -6,20 +6,21 @@ and interactively analyse network traffic through the chat interface.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from typing import Annotated, Any
 
-import anyio
+from langchain.agents import create_agent
 from langchain_core.messages import SystemMessage
 from langchain_core.tools import tool
-from langgraph.prebuilt import create_react_agent
+from mcp import ClientSession
 
 from .graph import build_graph
-from .mcp_client import WiresharkMCPClient
 from .model_provider import create_chat_model
 from .security import ensure_pcap_path_async
 from .state import TrafficAnalysisState
+from .tools import build_mcp_client
 
 SYSTEM_PROMPT = """\
 You are a professional network traffic analysis agent. You have access to Wireshark-MCP tools
@@ -53,8 +54,7 @@ user to confirm or provide additional information — just start analysing.
 """
 
 
-
-def _make_tools(mcp: WiresharkMCPClient, pipeline_graph):
+def _make_tools(session: ClientSession, pipeline_graph):
     @tool
     async def run_traffic_analysis(filepath: str) -> str:
         """Run the fully automated 5-stage traffic analysis pipeline on a PCAP file.
@@ -78,7 +78,7 @@ def _make_tools(mcp: WiresharkMCPClient, pipeline_graph):
             "threat_intel": [],
             "final_report": "",
         }
-        result = await anyio.to_thread.run_sync(pipeline_graph.invoke, initial_state)
+        result = await pipeline_graph.ainvoke(initial_state)
         return result.get("final_report", "")
 
     @tool
@@ -89,8 +89,10 @@ def _make_tools(mcp: WiresharkMCPClient, pipeline_graph):
             filepath: Absolute path to the .pcap or .pcapng file.
         """
         path = await ensure_pcap_path_async(filepath)
-        result = await mcp.call_tool("get_capture_file_info", {"filepath": path})
-        return json.dumps(result, ensure_ascii=False, indent=2)
+        result = await session.call_tool("get_capture_file_info", {"filepath": path})
+        return json.dumps(
+            result.structuredContent or result.content, ensure_ascii=False, indent=2
+        )
 
     @tool
     async def get_protocol_statistics(filepath: str) -> str:
@@ -102,8 +104,10 @@ def _make_tools(mcp: WiresharkMCPClient, pipeline_graph):
             filepath: Absolute path to the .pcap or .pcapng file.
         """
         path = await ensure_pcap_path_async(filepath)
-        result = await mcp.call_tool("get_protocol_statistics", {"filepath": path})
-        return json.dumps(result, ensure_ascii=False, indent=2)
+        result = await session.call_tool("get_protocol_statistics", {"filepath": path})
+        return json.dumps(
+            result.structuredContent or result.content, ensure_ascii=False, indent=2
+        )
 
     @tool
     async def export_packets_json(
@@ -127,11 +131,13 @@ def _make_tools(mcp: WiresharkMCPClient, pipeline_graph):
         """
         path = await ensure_pcap_path_async(filepath)
         safe_max = min(max(max_packets, 1), 100)
-        result = await mcp.call_tool(
+        result = await session.call_tool(
             "export_packets_json",
             {"filepath": path, "display_filter": display_filter, "max_packets": safe_max},
         )
-        return json.dumps(result, ensure_ascii=False, indent=2)
+        return json.dumps(
+            result.structuredContent or result.content, ensure_ascii=False, indent=2
+        )
 
     @tool
     async def check_ip_threat_intel(ip_addresses: str) -> str:
@@ -143,11 +149,13 @@ def _make_tools(mcp: WiresharkMCPClient, pipeline_graph):
         ips = [ip.strip() for ip in ip_addresses.split(",") if ip.strip()]
         if not ips:
             return json.dumps({"error": "no valid IP addresses provided"}, ensure_ascii=False)
-        result = await mcp.call_tool(
+        result = await session.call_tool(
             "check_ip_threat_intel",
             {"ip_or_filepath": ",".join(ips), "providers": "urlhaus,abuseipdb"},
         )
-        return json.dumps(result, ensure_ascii=False, indent=2)
+        return json.dumps(
+            result.structuredContent or result.content, ensure_ascii=False, indent=2
+        )
 
     @tool
     async def scan_capture_for_threats(filepath: str) -> str:
@@ -160,8 +168,10 @@ def _make_tools(mcp: WiresharkMCPClient, pipeline_graph):
             filepath: Absolute path to the .pcap or .pcapng file.
         """
         path = await ensure_pcap_path_async(filepath)
-        result = await mcp.call_tool("scan_capture_for_threats", {"filepath": path})
-        return json.dumps(result, ensure_ascii=False, indent=2)
+        result = await session.call_tool("scan_capture_for_threats", {"filepath": path})
+        return json.dumps(
+            result.structuredContent or result.content, ensure_ascii=False, indent=2
+        )
 
     @tool
     async def list_tcp_streams(filepath: str) -> str:
@@ -173,8 +183,10 @@ def _make_tools(mcp: WiresharkMCPClient, pipeline_graph):
             filepath: Absolute path to the .pcap or .pcapng file.
         """
         path = await ensure_pcap_path_async(filepath)
-        result = await mcp.call_tool("list_tcp_streams", {"filepath": path})
-        return json.dumps(result, ensure_ascii=False, indent=2)
+        result = await session.call_tool("list_tcp_streams", {"filepath": path})
+        return json.dumps(
+            result.structuredContent or result.content, ensure_ascii=False, indent=2
+        )
 
     @tool
     async def follow_tcp_stream(filepath: str, stream_index: int) -> str:
@@ -185,10 +197,12 @@ def _make_tools(mcp: WiresharkMCPClient, pipeline_graph):
             stream_index: The 0-based index of the TCP stream to follow.
         """
         path = await ensure_pcap_path_async(filepath)
-        result = await mcp.call_tool(
+        result = await session.call_tool(
             "follow_tcp_stream", {"filepath": path, "stream_index": stream_index}
         )
-        return json.dumps(result, ensure_ascii=False, indent=2)
+        return json.dumps(
+            result.structuredContent or result.content, ensure_ascii=False, indent=2
+        )
 
     return [
         run_traffic_analysis,
@@ -202,7 +216,7 @@ def _make_tools(mcp: WiresharkMCPClient, pipeline_graph):
     ]
 
 
-def _get_agent_graph():
+async def _get_agent_graph():
     """Build and return the compiled agent graph from environment variables."""
     provider = os.getenv("MODEL_PROVIDER", "deepseek").lower()
     model_name = os.getenv("MODEL_NAME")
@@ -218,16 +232,20 @@ def _get_agent_graph():
         temperature=0,
         base_url=None,
     )
-    mcp_client = WiresharkMCPClient.from_env()
-    pipeline_graph = build_graph(model=model, mcp_client=mcp_client)
-    tools = _make_tools(mcp_client, pipeline_graph)
 
-    return create_react_agent(
+    mcp_client = build_mcp_client()
+    session_ctx = mcp_client.session("wireshark")
+    session = await session_ctx.__aenter__()
+
+    pipeline_graph = await build_graph(model=model, session=session)
+    tools = _make_tools(session, pipeline_graph)
+
+    return create_agent(
         model=model,
         tools=tools,
-        prompt=SystemMessage(content=SYSTEM_PROMPT),
+        system_prompt=SYSTEM_PROMPT,
     )
 
 
 # Module-level compiled graph for "langgraph dev" server.
-agent_graph = _get_agent_graph()
+agent_graph = asyncio.run(_get_agent_graph())

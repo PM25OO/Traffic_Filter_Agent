@@ -7,8 +7,10 @@ import json
 from dataclasses import dataclass
 from typing import Any, Dict, List
 
+from langchain.agents import create_agent
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
+from mcp import ClientSession
 
 from .prompts import (
     MACRO_TRIAGE_SYSTEM,
@@ -27,14 +29,14 @@ from .security import (
     validate_ip,
     validate_port,
 )
-from .mcp_client import WiresharkMCPClient
 from .state import TrafficAnalysisState
+from .tools import create_macro_triage_tools, create_micro_deepdive_tools
 
 
 @dataclass(frozen=True)
 class NodeConfig:
     model: BaseChatModel
-    mcp: WiresharkMCPClient
+    session: ClientSession
     max_packets: int = 100
     max_iterations: int = 5
 
@@ -44,15 +46,6 @@ def _safe_json_loads(payload: str, fallback: Dict[str, Any]) -> Dict[str, Any]:
         return json.loads(payload)
     except json.JSONDecodeError:
         return fallback
-
-
-def _payload_to_json(payload: Any) -> str:
-    if isinstance(payload, dict) and "data" in payload:
-        payload = payload.get("data")
-    try:
-        return json.dumps(payload, ensure_ascii=False, indent=2)
-    except TypeError:
-        return str(payload)
 
 
 def _normalize_suspicious_targets(raw_targets: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -91,26 +84,31 @@ def _fallback_filters(suspicious_targets: List[Dict[str, Any]]) -> List[str]:
     return filters
 
 
+# ---------------------------------------------------------------------------
+# Node 1 — Macro Triage
+# ---------------------------------------------------------------------------
+
+
 def macro_triage_node(config: NodeConfig):
-    def _node(state: TrafficAnalysisState) -> Dict[str, Any]:
+    async def _node(state: TrafficAnalysisState) -> Dict[str, Any]:
         pcap_path = ensure_pcap_path(state["pcap_path"])
-        protocol_stats = config.mcp.get_protocol_statistics(pcap_path)
-        if protocol_stats.get("status") != "success":
-            error_message = protocol_stats.get("message", "unknown error")
-            protocol_hierarchy = f"error: {error_message}"
-            ip_conversations = f"error: {error_message}"
-        else:
-            protocol_hierarchy = protocol_stats.get("protocol_hierarchy", "")
-            ip_conversations = protocol_stats.get("ip_conversations", "")
-        prompt = MACRO_TRIAGE_USER.format(
-            protocol_hierarchy=protocol_hierarchy,
-            ip_conversations=ip_conversations,
+        tools = create_macro_triage_tools(config.session, pcap_path)
+        agent = create_agent(
+            model=config.model,
+            tools=tools,
+            system_prompt=MACRO_TRIAGE_SYSTEM,
         )
-        response = config.model.invoke(
-            [SystemMessage(content=MACRO_TRIAGE_SYSTEM), HumanMessage(content=prompt)]
+
+        print("  agent exploring...", flush=True)
+        result = await agent.ainvoke(
+            {"messages": [HumanMessage(content=MACRO_TRIAGE_USER)]},
+            config={"recursion_limit": 15},
         )
+        print("  agent finished", flush=True)
+
+        final_content = result["messages"][-1].content
         parsed = _safe_json_loads(
-            response.content,
+            final_content,
             {
                 "macro_stats": {"summary": "LLM output parse failed", "highlights": []},
                 "suspicious_targets": [],
@@ -120,34 +118,34 @@ def macro_triage_node(config: NodeConfig):
             parsed.get("suspicious_targets", [])
         )
         suspicious_targets = limit_list(suspicious_targets, 10)
-        macro_stats = parsed.get("macro_stats", {})
-        macro_stats.update(
-            {
-                "raw_protocol_hierarchy": protocol_hierarchy,
-                "raw_ip_conversations": ip_conversations,
-            }
-        )
         return {
-            "macro_stats": macro_stats,
+            "macro_stats": parsed.get("macro_stats", {}),
             "suspicious_targets": suspicious_targets,
         }
 
     return _node
 
 
+# ---------------------------------------------------------------------------
+# Node 2 — Target Extraction
+# ---------------------------------------------------------------------------
+
+
 def target_extraction_node(config: NodeConfig):
-    def _node(state: TrafficAnalysisState) -> Dict[str, Any]:
-        prompt = TARGET_EXTRACTION_USER.format(
+    async def _node(state: TrafficAnalysisState) -> Dict[str, Any]:
+        user_prompt = TARGET_EXTRACTION_USER.format(
             macro_stats=state["macro_stats"],
             suspicious_targets=state["suspicious_targets"],
         )
-        response = config.model.invoke(
-            [
-                SystemMessage(content=TARGET_EXTRACTION_SYSTEM),
-                HumanMessage(content=prompt),
-            ]
-        )
-        parsed = _safe_json_loads(response.content, {"tshark_filters": []})
+        full_text = ""
+        async for chunk in config.model.astream(
+            [SystemMessage(content=TARGET_EXTRACTION_SYSTEM), HumanMessage(content=user_prompt)]
+        ):
+            if chunk.content:
+                print(chunk.content, end="", flush=True)
+                full_text += chunk.content
+        print()
+        parsed = _safe_json_loads(full_text, {"tshark_filters": []})
         raw_filters = parsed.get("tshark_filters", [])
         filters: List[str] = []
         for filter_expr in raw_filters:
@@ -163,46 +161,60 @@ def target_extraction_node(config: NodeConfig):
     return _node
 
 
+# ---------------------------------------------------------------------------
+# Node 3 — Micro Deepdive
+# ---------------------------------------------------------------------------
+
+
 def micro_deepdive_node(config: NodeConfig):
-    def _node(state: TrafficAnalysisState) -> Dict[str, Any]:
+    async def _node(state: TrafficAnalysisState) -> Dict[str, Any]:
         details: List[Dict[str, Any]] = []
         pcap_path = ensure_pcap_path(state["pcap_path"])
-        for display_filter in state["tshark_filters"]:
-            safe_filter = validate_display_filter(display_filter)
-            iterations = 0
-            while iterations < config.max_iterations:
-                iterations += 1
-                packets_payload = config.mcp.export_packets_json(
-                    pcap_path, safe_filter, config.max_packets
-                )
-                packets_json = _payload_to_json(packets_payload)
-                prompt = MICRO_DEEPDIVE_USER.format(
-                    display_filter=safe_filter,
-                    packets_json=packets_json,
-                )
-                response = config.model.invoke(
-                    [
-                        SystemMessage(content=MICRO_DEEPDIVE_SYSTEM),
-                        HumanMessage(content=prompt),
-                    ]
-                )
-                parsed = _safe_json_loads(
-                    response.content,
-                    {
-                        "filter": safe_filter,
-                        "verdict": "none",
-                        "findings": ["LLM output parse failed"],
-                        "evidence": [],
-                        "confidence": 0.0,
-                    },
-                )
-                parsed["filter"] = safe_filter
-                parsed["iterations"] = iterations
-                details.append(parsed)
-                break
+        filters = state["tshark_filters"]
+        for idx, display_filter in enumerate(filters):
+            print(f"\n  [{idx + 1}/{len(filters)}] {display_filter}", flush=True)
+            tools = create_micro_deepdive_tools(
+                config.session, pcap_path, config.max_packets
+            )
+            agent = create_agent(
+                model=config.model,
+                tools=tools,
+                system_prompt=MICRO_DEEPDIVE_SYSTEM,
+            )
+            user_prompt = MICRO_DEEPDIVE_USER.format(display_filter=display_filter)
+
+            print("    agent exploring...", flush=True)
+            result = await agent.ainvoke(
+                {"messages": [HumanMessage(content=user_prompt)]},
+                config={"recursion_limit": config.max_iterations * 3},
+            )
+            print("    agent finished", flush=True)
+
+            final_content = result["messages"][-1].content
+            parsed = _safe_json_loads(
+                final_content,
+                {
+                    "filter": display_filter,
+                    "verdict": "none",
+                    "findings": ["LLM output parse failed"],
+                    "evidence": [],
+                    "confidence": 0.0,
+                },
+            )
+            parsed.setdefault("filter", display_filter)
+            details.append(parsed)
+            print(
+                f"    verdict: {parsed.get('verdict', '?')} "
+                f"(confidence {parsed.get('confidence', 0):.2f})"
+            )
         return {"micro_details": details}
 
     return _node
+
+
+# ---------------------------------------------------------------------------
+# Helper
+# ---------------------------------------------------------------------------
 
 
 def _is_global_ip(ip_value: str) -> bool:
@@ -214,31 +226,56 @@ def _is_global_ip(ip_value: str) -> bool:
         return False
 
 
+# ---------------------------------------------------------------------------
+# Node 4 — Threat Intel
+# ---------------------------------------------------------------------------
+
+
 def threat_intel_node(config: NodeConfig):
-    def _node(state: TrafficAnalysisState) -> Dict[str, Any]:
+    async def _node(state: TrafficAnalysisState) -> Dict[str, Any]:
         targets = [t.get("ip") for t in state["suspicious_targets"]]
         ips = [ip for ip in targets if ip and _is_global_ip(ip)]
         if not ips:
+            print("  无公网IP，跳过威胁情报查询")
             return {"threat_intel": []}
 
+        print(f"  [intel] querying {len(ips)} public IPs: {', '.join(ips)}")
         providers = "urlhaus,abuseipdb"
-        result = config.mcp.check_ip_threat_intel(ips, providers)
-        if result.get("status") == "success" and isinstance(result.get("results"), list):
-            return {"threat_intel": result.get("results", [])}
-        return {"threat_intel": [result]}
+        result = await config.session.call_tool(
+            "check_ip_threat_intel",
+            {"ip_or_filepath": ",".join(ips), "providers": providers},
+        )
+        if not result.isError and isinstance(result.structuredContent, dict):
+            sc = result.structuredContent
+            results = sc.get("results", []) if isinstance(sc, dict) else []
+            hits = len(results)
+            print(f"  [ok] {hits} threat intel hits")
+            return {"threat_intel": results}
+        print(f"  [warn] query error: {getattr(result, 'content', 'unknown')}")
+        return {"threat_intel": []}
 
     return _node
 
 
+# ---------------------------------------------------------------------------
+# Node 5 — Report Synthesis
+# ---------------------------------------------------------------------------
+
+
 def report_synthesis_node(config: NodeConfig):
-    def _node(state: TrafficAnalysisState) -> Dict[str, Any]:
-        prompt = REPORT_USER.format(
+    async def _node(state: TrafficAnalysisState) -> Dict[str, Any]:
+        user_prompt = REPORT_USER.format(
             micro_details=state["micro_details"],
             threat_intel=state["threat_intel"],
         )
-        response = config.model.invoke(
-            [SystemMessage(content=REPORT_SYSTEM), HumanMessage(content=prompt)]
-        )
-        return {"final_report": response.content}
+        full_text = ""
+        async for chunk in config.model.astream(
+            [SystemMessage(content=REPORT_SYSTEM), HumanMessage(content=user_prompt)]
+        ):
+            if chunk.content:
+                print(chunk.content, end="", flush=True)
+                full_text += chunk.content
+        print()
+        return {"final_report": full_text}
 
     return _node
